@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "568955659410",
+    "project_id": "unicare-7ba3c",
+    "storage_bucket": "unicare-7ba3c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:568955659410:android:5060bc0720e1385d83324b",
+        "android_client_info": {
+          "package_name": "com.unicarehhc.patientapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "568955659410-s6rs15j03q579ue56ht6chutck997u2v.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.unicarehhc.patientapp",
+            "certificate_hash": "a80cf49ad4e92b2f551a34129a9e4ef58635b6d5"
+          }
+        },
+        {
+          "client_id": "568955659410-tka6fv0p015ttjs5dq0f7seeqba75ugr.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBT8yl1ciPZlPHyRsfuB6tgmGaq6yuZkNI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "568955659410-tka6fv0p015ttjs5dq0f7seeqba75ugr.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "568955659410-6bkvakbl24fp7lodrpku8c0ukc58tf73.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.unicarehhc.patientapp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

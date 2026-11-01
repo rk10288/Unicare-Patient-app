@@ -1,0 +1,232 @@
+name: iOS Release Build & Upload
+
+# Trigger manually, or on tags like v1.0.0 — adjust to your workflow
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'develop'
+
+jobs:
+  build-ios:
+    name: Build & Upload to TestFlight
+    runs-on: macos-15   # Apple Silicon runner; use macos-latest if you don't care which
+
+    steps:
+      # ---------- 1. Checkout code ----------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ---------- 2. Pin Xcode version ---------
+      # latest-stable picks the newest stable Xcode on the runner, which matches
+      # the SDK version that pre-built Mapbox/Firebase frameworks were compiled with.
+      # Pinning to a specific older version (e.g. 16.2) breaks when any dependency
+      # ships frameworks compiled with a newer Xcode/Swift (e.g. MapboxCommon on Xcode 26).
+      - name: Select Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.0'
+        
+      # - name: Download iOS platform support
+      #   run: xcodebuild -downloadPlatform iOS
+
+      # ---------- 3. Set up Flutter ----------
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.7'
+          channel: 'stable'
+          cache: true
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Install FlutterFire CLI
+        run: dart pub global activate flutterfire_cli
+
+      # .dart_tool/flutterfire/ is gitignored but the Xcode build phase script
+      # requires app_id_file.json to upload Crashlytics symbols. Reconstruct it
+      # from GoogleService-Info.plist (which is committed and contains the same values).
+      - name: Generate FlutterFire app_id_file.json
+        run: |
+          GOOGLE_APP_ID=$(/usr/libexec/PlistBuddy -c "Print GOOGLE_APP_ID" ios/Runner/GoogleService-Info.plist)
+          PROJECT_ID=$(/usr/libexec/PlistBuddy -c "Print PROJECT_ID" ios/Runner/GoogleService-Info.plist)
+          mkdir -p ".dart_tool/flutterfire/platforms/ios/default/unicare-7ba3c"
+          printf '{\n  "file_generated_by": "FlutterFire CLI",\n  "purpose": "FirebaseAppID & ProjectID for this Firebase app in this directory",\n  "GOOGLE_APP_ID": "%s",\n  "FIREBASE_PROJECT_ID": "%s"\n}\n' \
+            "$GOOGLE_APP_ID" "$PROJECT_ID" \
+            > ".dart_tool/flutterfire/platforms/ios/default/unicare-7ba3c/app_id_file.json"
+
+      # ---------- 4. Install CocoaPods dependencies ----------
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      # ---------- 5. Import signing certificate & provisioning profile ----------
+      # These come from base64-encoded secrets you create once (see setup notes).
+      - name: Install Apple signing certificate & provisioning profile
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Create paths
+          CERTIFICATE_PATH=$RUNNER_TEMP/build_certificate.p12
+          PP_PATH=$RUNNER_TEMP/build_pp.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          # Decode secrets to files (strip whitespace first to handle copy-paste artifacts)
+          echo "$BUILD_CERTIFICATE_BASE64" | tr -d ' \n\r' | base64 --decode -o $CERTIFICATE_PATH
+          echo "$BUILD_PROVISION_PROFILE_BASE64" | tr -d ' \n\r' | base64 --decode -o $PP_PATH
+
+          # Fail fast with clear messages if either secret decoded to an empty file
+          if [ ! -s "$CERTIFICATE_PATH" ]; then
+            echo "ERROR: BUILD_CERTIFICATE_BASE64 is empty or not set — certificate file is zero-length."
+            exit 1
+          fi
+          if [ ! -s "$PP_PATH" ]; then
+            echo "ERROR: BUILD_PROVISION_PROFILE_BASE64 is empty or not set — provisioning profile file is zero-length."
+            exit 1
+          fi
+
+          # Create a temporary keychain and import the certificate
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH login.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # Install provisioning profile
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp $PP_PATH ~/Library/MobileDevice/Provisioning\ Profiles
+
+          # Extract the profile's UUID and name via a temp file (piping to /dev/stdin is unreliable)
+          PROFILE_DECODED=$(mktemp)
+          security cms -D -i $PP_PATH -o $PROFILE_DECODED
+          if [ ! -s "$PROFILE_DECODED" ]; then
+            echo "ERROR: security cms -D failed — provisioning profile is not a valid CMS-encoded .mobileprovision file."
+            exit 1
+          fi
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" $PROFILE_DECODED)
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" $PROFILE_DECODED)
+          rm -f $PROFILE_DECODED
+          echo "PROFILE_UUID=$PROFILE_UUID" >> $GITHUB_ENV
+          echo "PROFILE_NAME=$PROFILE_NAME" >> $GITHUB_ENV
+
+      # ---------- 6. Set Development Team for Flutter's build check ----------
+      # `flutter build ... --no-codesign` still checks for a configured
+      # Development Team before it will proceed, even though it won't
+      # actually sign anything. Since this project was never opened in
+      # Xcode (no Mac available), that field was never set. Injecting it
+      # into the xcconfig files satisfies Flutter's check without needing
+      # the Xcode UI.
+      - name: Set Development Team
+        env:
+          DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for cfg in ios/Flutter/Debug.xcconfig ios/Flutter/Release.xcconfig ios/Flutter/Profile.xcconfig; do
+            echo "DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM" >> "$cfg"
+            # Disable Mac Catalyst so iOS-only APIs (API_UNAVAILABLE(macos)) don't cause errors
+            echo "SUPPORTS_MACCATALYST=NO" >> "$cfg"
+          done
+          # Signing settings go into Release.xcconfig (Runner target only).
+          # Passing them as global xcodebuild args applies to ALL targets including
+          # SPM packages, which don't support manual signing and will error.
+          printf '\nCODE_SIGN_STYLE=Manual\nCODE_SIGN_IDENTITY=Apple Distribution\nPROVISIONING_PROFILE=%s\nPROVISIONING_PROFILE_SPECIFIER=%s\n' \
+            "$PROFILE_UUID" "$PROFILE_NAME" >> ios/Flutter/Release.xcconfig
+
+      # ---------- 7. Archive with explicit MANUAL signing ----------
+      # This is the key fix: Flutter's default Xcode project uses "Automatic"
+      # signing for Release, which fails in CI when only a distribution cert
+      # exists. We override signing settings directly on the xcodebuild call
+      # so it uses your distribution cert + profile, never a dev certificate.
+      - name: Flutter build (no codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Archive with manual signing
+        env:
+          DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cd ios
+          xcodebuild archive \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath $RUNNER_TEMP/Runner.xcarchive \
+            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+            SUPPORTS_MACCATALYST=NO
+
+      # ---------- 8. Export the .ipa from the archive and upload to artifact ----------
+      - name: Export IPA
+        run: |
+          # Generate ExportOptions with the exact UUID extracted from the installed profile.
+          # The static file in ios/ExportOptions.plist lacks provisioningProfiles, which
+          # causes "requires a provisioning profile" with signingStyle=manual.
+          cat > $RUNNER_TEMP/ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>teamID</key>
+              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>com.unicarehhc.patient</key>
+                  <string>$PROFILE_UUID</string>
+              </dict>
+              <key>uploadSymbols</key>
+              <true/>
+              <key>compileBitcode</key>
+              <false/>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath $RUNNER_TEMP/Runner.xcarchive \
+            -exportPath build/ios/ipa \
+            -exportOptionsPlist $RUNNER_TEMP/ExportOptions.plist
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-signed-ipa
+          path: build/ios/ipa/*.ipa
+          if-no-files-found: error
+          retention-days: 10
+
+      #---------- 9. Upload to App Store Connect (TestFlight) ----------
+      - name: Upload to App Store Connect
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        run: |
+          mkdir -p ~/private_keys
+          # fastlane --api_key_path expects a JSON file, not a raw .p8 file
+          KEY_CONTENT=$(echo -n "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode)
+          jq -n \
+            --arg key_id "$APP_STORE_CONNECT_API_KEY_ID" \
+            --arg issuer_id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --arg key "$KEY_CONTENT" \
+            '{"key_id": $key_id, "issuer_id": $issuer_id, "key": $key, "in_house": false}' \
+            > ~/private_keys/api_key.json
+
+          fastlane pilot upload \
+            --api_key_path ~/private_keys/api_key.json \
+            --ipa build/ios/ipa/*.ipa \
+            --skip_waiting_for_build_processing true
+
+      # ---------- 10. Cleanup (optional but tidy) ----------
+      - name: Clean up keychain and profile
+        if: always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
+          rm -f ~/private_keys/api_key.json || true

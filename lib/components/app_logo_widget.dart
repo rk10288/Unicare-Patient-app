@@ -1,0 +1,32 @@
+import 'package:flutter/material.dart';
+import 'package:nb_utils/nb_utils.dart';
+import '../configs.dart';
+import '../generated/assets.dart';
+import '../utils/colors.dart';
+import '../utils/constants.dart';
+
+class AppLogoWidget extends StatelessWidget {
+  const AppLogoWidget({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: Constants.appLogoSize,
+      width: Constants.appLogoSize,
+      alignment: Alignment.center,
+      padding: const EdgeInsets.all(10),
+
+      child: Image.asset(
+        Assets.assetsAppLogo,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) => Text(
+          APP_NAME.toUpperCase(),
+          style: boldTextStyle(
+            color: appColorPrimary,
+            letterSpacing: 10,
+          ),
+        ),
+      ),
+    );
+  }
+}
