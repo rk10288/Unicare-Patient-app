@@ -6,7 +6,7 @@
     <string>app-store-connect</string>
 
     <key>teamID</key>
-    <string>J4RU3Q77Y7</string>
+    <string>YCZPHTQ784</string>
 
     <key>signingStyle</key>
     <string>manual</string>
@@ -14,7 +14,7 @@
     <!--
     <key>provisioningProfiles</key>
     <dict>
-        <key>com.unicarehhc.patient</key>
+        <key>com.unicarehhc.patientsapp</key>
         <string>Unicare Home Health Care app for patient</string>
     </dict>
     -->

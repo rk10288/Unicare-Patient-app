@@ -62,7 +62,7 @@ class DefaultFirebaseOptions {
     storageBucket: 'unicare-7ba3c.firebasestorage.app',
     androidClientId: '568955659410-s6rs15j03q579ue56ht6chutck997u2v.apps.googleusercontent.com',
     iosClientId: '568955659410-6bkvakbl24fp7lodrpku8c0ukc58tf73.apps.googleusercontent.com',
-    iosBundleId: 'com.unicarehhc.patientapp',
+    iosBundleId: 'com.unicarehhc.patientsapp',
   );
 
   static const FirebaseOptions web = FirebaseOptions(
